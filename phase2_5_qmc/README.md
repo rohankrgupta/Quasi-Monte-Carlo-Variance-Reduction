@@ -3,8 +3,8 @@
 Behavior policy search (BPS, [1]) lowers the variance of a policy's value estimate by collecting data with a different behavior policy and reweighting it. Phase 2 showed that tracking BPS's target with ROS fails. Here we coordinate BPS's samples instead: all episodes of the behavior policy run in lockstep, and at every step the episodes that are in similar states receive evenly spread action draws (Array-RQMC; randomized QMC for policy evaluation is due to Arnold et al., 2022). Each trajectory is still distributed exactly as the behavior policy, so importance sampling stays unbiased and independent repeats give valid error bars.
 
 **The method.**
-1. Learn the behavior policy q once: by BPG as in [1], or from a pilot of on-policy episodes by the offline fit below (about 100× fewer episodes). The same q is reused across evaluations and conditions.
-2. Run n episodes of q in lockstep. At each step, sort the running episodes by state (or by a value estimate when states are continuous) and give the episode of rank i the action uniform frac(φ(i) + shift_t), with φ the van der Corput sequence and a fresh random shift per step.
+1. Learn the behavior policy q once, in simulation: by BPG as in [1], keeping the iterate whose OIS second moment is lowest on one fixed sample of π_e's own episodes (`core/onpolicy_select.py`), or from a pilot of on-policy episodes by the offline fit below (about 100× fewer episodes). The same q is reused across evaluations and conditions.
+2. Run n episodes of q in lockstep. At each step, sort the running episodes by state (or by a value estimate when states are continuous) and give the episode of rank i the action uniform frac(φ(i) + shift_t), with φ the van der Corput sequence (the Halton sequence for several action dimensions) and a fresh random shift per step.
 3. Estimate v(π_e) by ordinary importance sampling (OIS) or per-decision IS (PDIS).
 4. When states repeat (discrete states): merge past weights, i.e. replace each episode's importance weight by the average over the episodes in the same state. This is marginalized importance sampling (Xie et al., 2019) computed online; it is exact there and adds up to 1.7×. In continuous states it is biased and is not used.
 
@@ -40,26 +40,48 @@ Paired MSE ratios of the merged version at n = 8192, with 95% CIs (✓ means bet
 
 ### 2. Continuous states (CartPole): coordinated BPS beats ROS
 
-The ROS repository's two CartPole benchmarks with its trained policies (`core/cartpole.py`): CartPole-v0 with a softmax policy over two pushes, and its continuous-action version with a Gaussian policy. Episodes are sorted by a linear value estimate; weights are not merged. Force noise of 3 N makes the dynamics stochastic. n·MSE/Var(g) at n = 4096, 1000 seeds, with the BPS target given (learned beforehand by BPG; `results/continuous/cartpole.md`, `cartpole_continuous.md`):
+The ROS repository's two CartPole benchmarks with its trained policies (`core/cartpole.py`): CartPole-v0 with a softmax policy over two pushes, and its continuous-action version with a Gaussian policy. Episodes are sorted by a linear value estimate; weights are not merged. Force noise of 3 N makes the dynamics stochastic. ROS's α is tuned at each n over a grid that reaches the rates where it diverges. n·MSE/Var(g) at n = 4096, 1000 seeds, with the BPS target given (learned beforehand by BPG; `results/continuous/cartpole.md`, `cartpole_continuous.md`, Part A):
 
 | Method | discrete, 0 N | discrete, 3 N | continuous actions, 0 N | continuous actions, 3 N |
 |---|---|---|---|---|
 | OS-MC | 1.00 | 1.07 | 1.02 | 1.05 |
-| ROS-MC (α tuned at each n) | 0.265 | 0.341 | 0.638 | 0.674 |
+| ROS-MC (α tuned at each n) | 0.211 | 0.302 | 0.596 | 0.605 |
 | BPS + OIS, i.i.d. ([1]) | 0.251 | 0.328 | 0.409 | 0.420 |
 | Array-RQMC, on-policy (MC) | 0.741 | 0.787 | 0.915 | 0.809 |
 | **BPS + Array-RQMC, OIS** | **0.158** | **0.242** | **0.341** | **0.392** |
-| paired ratio vs ROS-MC (95% CI) | 0.60 ✓ | 0.71 ✓ | 0.54 ✓ | 0.58 ✓ |
+| paired ratio vs ROS-MC (95% CI) | 0.75 ✓ | 0.80 ✓ | 0.57 ✓ | 0.65 ✓ |
 | paired ratio vs BPS + OIS | 0.63 ✓ | 0.74 ✓ | 0.83 ✓ | 0.93 ~ |
 
-- **1.4–1.9× better than ROS per episode, 1.16–1.5× at equal environment steps** (the BPS target lengthens episodes by about 20%). Unbiased (|bias|/SE ≤ 1.2), coverage 93–97%.
-- **Neither ingredient alone does it:** on-policy Array-RQMC gains little (0.74–0.92), and BPS alone is at best level with ROS.
+- **1.25–1.75× better than ROS per episode.** At equal environment steps: 1.25–1.41× with continuous actions, 1.03–1.09× with discrete actions (the BPS target lengthens episodes by about 20%). Unbiased (|bias|/SE ≤ 1.2), coverage 93–97%. At smaller n the margin is larger (discrete, 0 N: 0.44 at n = 64).
+- **Both ingredients contribute:** coordination improves on BPS alone by 7–37%, while on-policy Array-RQMC alone is far behind ROS (0.74–0.92). BPS alone beats ROS with continuous actions (0.41 vs 0.60), not with discrete ones.
 - **OIS beats PDIS here** (by 1.3–1.9×), the opposite of GridWorld.
-- **Merging over neighbours in value order is biased** (|bias|/SE of 20–44, coverage 3–46%), so merging stays an add-on for discrete states.
-- **Cost:** coordination adds about 6% wall-clock per episode over i.i.d. BPS sampling (12.7 vs 12.0 µs); ROS costs 1.6× more per episode (20 µs) for its per-step gradient.
-- **Learning the target online inside the budget does not pay** at these n: the repository's BPG on the first half of the episodes, then Array-RQMC, gives 0.43–0.46 at n = 4096 against ROS's 0.27–0.34, and on the continuous task one run blew up (9.6).
+- **Merging over neighbours in value order is biased** (|bias|/SE of 22–44, coverage 3–46%), so merging stays an add-on for discrete states.
+- **Cost:** coordination adds 6–13% wall-clock per episode over i.i.d. BPS sampling; ROS costs 1.4–1.6× more per episode than ours (21–25 vs 13–16 µs) for its per-step gradient.
+- These tables were produced with BPG's first selection rule (section 3); the revised rule selects the same four targets.
 
-### 3. The target is learned once and reused
+### 3. Continuous control (MuJoCo): coordinated BPS wins or ties tuned ROS
+
+gymnasium's Hopper and HalfCheetah models stepped directly with MuJoCo (`core/hopper.py`, `core/control.py`), with linear policies trained by ARS and evaluated as Gaussian policies over 200 actions. Two quantities per robot: the discounted return, and the probability of a rare failure (the hopper falls, 0.74%; the cheetah's torso turns past 90°, 1.5%). HalfCheetah also has dynamics noise (sd 0.02 on the applied control). Sort key linear in [z, z², 1]; Halton points. n·MSE/Var(g) at n = 2048, 200 seeds, target given (`results/continuous/hopper_*.md`, `control_cheetah-*.md`):
+
+| Method | Hopper fall | Hopper return | HalfCheetah return | HalfCheetah rare |
+|---|---|---|---|---|
+| action dimensions; π_e's action sd | 3; 0.75 | 3; 0.2 | 6; 0.05 | 6; 0.05 |
+| OS-MC | 0.979 | 1.01 | 1.16 | 0.961 |
+| ROS-MC (α tuned at each n) | 0.967 | 0.916 | 1.21 | 0.896 |
+| BPS + OIS, i.i.d. ([1]) | 0.537 | q = π_e | q = π_e | q = π_e |
+| Array-RQMC, on-policy (MC) | 1.03 | 0.734 | 0.908 | 0.959 |
+| **BPS + Array-RQMC, OIS** | **0.466** | **0.734** | **0.908** | **0.959** |
+| paired ratio vs ROS-MC, n = 32 / 256 / 2048 | 0.62 ✓ / 0.58 ~ / 0.48 ✓ | 1.09 ~ / 0.68 ✓ / 0.80 ~ | 1.04 ~ / 0.97 ~ / 0.75 ✓ | 1.21 ~ / 1.18 ~ / 1.07 ~ |
+| coverage, ours / ROS | 95% / 95% | 100% / 100% | 100% / 95% | 80% / 85% |
+| µs per episode, ours / ROS | 3194 / 4178 | 2006 / 2332 | 720 / 1253 | 779 / 1338 |
+
+- **Rare failures: 2.1× better than ROS** (Hopper fall, n = 2048, significant; 1.6× at n = 32), unbiased (bias −1.0 SE) with 95% coverage. The gain is mostly BPS's (0.537 alone); coordination adds a further 13%, not significant.
+- **Returns: coordination alone.** BPG finds no better q than π_e (Hopper's return is mostly +1 per step upright; HalfCheetah's π_e is nearly deterministic), so the gain is Array-RQMC's: 27% better than on-policy sampling on Hopper (significant), 1.46× better than ROS at n = 256 on Hopper and 1.34× at n = 2048 on HalfCheetah, ties elsewhere.
+- **HalfCheetah rare: a tie.** Neither part has room. For this 1.5% event, 95% intervals from 10 runs under-cover for both methods.
+- **Faster per episode on every task** (0.58–0.86× ROS's time). Hopper fall's times come from a run partly on battery power, which slowed every method alike.
+- **Selecting BPG's iterate on π_e's episodes.** BPG keeps the iterate with the lowest OIS second moment, E_q[(g w)²] = E_πe[g² π_e/q], measured on one fixed sample of 40,000 π_e episodes. Measured instead on each iterate's own episodes (the first rule), it can be fooled by a q that reaches a rare event by routes π_e does not take: on HalfCheetah's rare event that rule picked a target whose true variance is about 10⁴⁴× on-policy. The revised rule picks the same target on CartPole (all four tasks), Hopper return and HalfCheetah return, whose tables were produced under the first rule, and a better one on Hopper fall (0.548 vs 0.756 on held-out π_e episodes).
+
+### 4. The target is learned once and reused
 
 **Offline fit** (`core/offline_bps.py`). BPG uses each episode for one gradient step; a good CartPole target took it 3.2M episodes. Instead we collect one on-policy pilot and fit q to it: minimize the pilot's importance-sampling estimate of q's variance, (1/n)Σ g_i² π_e(τ_i)/q(τ_i), plus a KL pull toward π_e, by L-BFGS over the policy's output layer only. [1] tried reusing earlier batches this way and found it unstable; the restriction to the output layer and the KL term are what make it work. Quality = Var_q(OIS)/Var(g), on 10⁶ fresh episodes (`results/continuous/offline_target.md`):
 
@@ -80,9 +102,7 @@ Fits take 2–17 s. Fitting the whole network overfits at every pilot size, and 
 
 Quality falls with noise only because more environment noise leaves less for any behavior policy to remove.
 
-**Break-even.** With the target given, coordinated BPS reaches ROS's MSE on CartPole with 60% of ROS's episodes (73% of its environment steps). A 2048-episode pilot is therefore repaid after about 1.3 evaluations of 4096 episodes (about 2 at equal steps); every further evaluation of the same policy, under the same or a perturbed environment, gains the full 1.4–1.9×. The n at which the pipeline beats ROS with the pilot counted in a single evaluation is being measured (`results/continuous/cartpole_breakeven.md`, pending).
-
-### 4. Smooth continuous actions: QMC beats ROS and PROPS
+### 5. Smooth continuous actions: QMC beats ROS and PROPS
 
 Linear-quadratic control with a Gaussian policy (`core/lq.py`), where the value is exact. With continuous actions, the action is a smooth function of its uniform, which is where QMC is strongest.
 
@@ -100,7 +120,7 @@ Paired MSE ratios at n = 4096, 1000 seeds (✓ means QMC is better):
 - The advantage shrinks as environment noise grows. In the 4-D, H = 50 setting no method gets far below i.i.d. sampling.
 - QMC's gain over i.i.d. sampling on LQR is Arnold et al.'s result; the comparison with ROS and PROPS is the part added here.
 
-### 5. Unbiased estimates with valid error bars
+### 6. Unbiased estimates with valid error bars
 
 Data collected with ROS or PROPS give biased Monte Carlo estimates, because each action depends on all earlier data. When their variance is small, that bias makes confidence intervals undercover. The RQMC designs keep every trajectory exactly distributed as the sampling policy.
 
@@ -108,11 +128,16 @@ Data collected with ROS or PROPS give biased Monte Carlo estimates, because each
 |---|---|---|
 | ROS, deterministic GridWorld | −12 to −20 | 55–78% |
 | ROS / PROPS, LQ (1-D, H = 10, σ_w ≤ 0.1) | −5 to −14 | 76–92% |
-| Sobol RQMC and Array-RQMC (all domains) | within ±2 except one cell (+3.1) | 88–99% |
+| ROS, CartPole with discrete actions (tuned α) | −4.5 to −10.6 | 79–92% |
+| ROS, continuous actions (CartPole, MuJoCo) | within ±1.4 | 85–100% |
+| Sobol RQMC and Array-RQMC (GridWorld, LQ) | within ±2 except one cell (+3.1) | 88–99% |
+| Coordinated BPS (CartPole, MuJoCo) | within ±1.7 | 93–100%, except 80% on HalfCheetah's 1.5% event (ROS: 85%) |
+
+With continuous actions ROS is unbiased too, so there the case for coordinated BPS is accuracy and speed, not validity.
 
 ### Where each method wins
 - **Deterministic discrete domains, on-policy:** ROS. Its adaptive per-state balancing reaches n⁻² there.
-- **Noisy or continuous-state domains, when the behavior policy can be learned once:** coordinated BPS.
+- **Noisy or continuous-state domains, when the behavior policy can be learned once:** coordinated BPS. In MuJoCo it wins on rare failures (through BPS) and on smooth returns with few action dimensions (through coordination), and ties ROS when π_e is nearly deterministic.
 - **Smooth continuous actions:** QMC, even on-policy.
 - **Small budgets with no pilot and no logged data:** ROS; learning the target inside a few thousand episodes does not pay.
 
@@ -139,6 +164,10 @@ python -m phase2_5_qmc.experiments.continuous.lq               # 1 hour: continu
 python -m phase2_5_qmc.experiments.continuous.cartpole discrete    # 45 min: CartPole, discrete actions
 python -m phase2_5_qmc.experiments.continuous.cartpole continuous  # 45 min: CartPole, continuous actions
 python -m phase2_5_qmc.experiments.continuous.offline_target   # 6 min: the offline target fit and its transfer
+python -m phase2_5_qmc.experiments.continuous.hopper fall      # 2.5 hours: Hopper, probability of falling within 200 actions
+python -m phase2_5_qmc.experiments.continuous.hopper return    # 2.5 hours: Hopper, discounted return over 200 actions
+python -m phase2_5_qmc.experiments.continuous.control cheetah-return  # 1 hour: HalfCheetah, discounted return
+python -m phase2_5_qmc.experiments.continuous.control cheetah-rare    # 1 hour: HalfCheetah, torso past 90° within 200 actions
 ```
 
 ## Code
@@ -150,6 +179,9 @@ core/j_target.py       the variance left after coordination (J), its exact gradi
 core/lq.py             linear-quadratic testbed (exact value) and its samplers, including ROS and PROPS
 core/cartpole.py       the ROS repo's CartPole tasks and policies: i.i.d., ROS, Array-RQMC and in-budget BPS samplers
 core/offline_bps.py    the offline fit of the BPS target from an on-policy pilot
+core/hopper.py         gymnasium's Hopper-v5 stepped directly with MuJoCo, a linear Gaussian policy (ARS), and its samplers
+core/control.py        HalfCheetah (and Reacher) stepped with MuJoCo, with dynamics noise; ARS policies, samplers and BPG
+core/onpolicy_select.py  BPG's iterate selection: each iterate's OIS second moment measured on π_e's own episodes
 ```
 
 Environments, exact DP, ROS toward πe and BPS's target come from Phases 1 and 2.
