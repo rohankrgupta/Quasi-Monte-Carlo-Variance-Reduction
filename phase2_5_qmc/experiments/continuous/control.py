@@ -141,8 +141,8 @@ def main(setting="cheetah-return"):
     text = [f"# Coordinated BPS in continuous control: {type(env).__name__}, {what} {env.horizon} actions\n",
             f"pi_e: ARS linear policy with action noise sd {sigma}; dynamics noise sd {task.env_sd} on the applied "
             f"control. Truth v = {v:.5g} ± {se_v:.2g} ({N_TRUTH} episodes), Var(g) = {var:.4g}, mean length "
-            f"{L_e:.1f}. BPS target learned offline by BPG in {t_bpg:.0f} s (not counted; iterates compared on 40000 episodes of pi_e). {notes}n·MSE/Var(g): "
-            f"on-policy MC = 1; {N_EVAL} seeds. Coverage: 95% t-intervals from groups of 10 runs. Time: µs per "
+            f"{L_e:.1f}. BPS target learned offline by BPG in {t_bpg:.0f} s (not counted; iterates compared on "
+            f"40000 episodes of pi_e). {notes}n·MSE/Var(g): on-policy MC = 1; {N_EVAL} seeds. Coverage: 95% t-intervals from groups of 10 runs. Time: µs per "
             f"episode at n = {NS[-1]} on 10 processes. ROS grid: {', '.join(f'{h:g}' for h in cfg['ros_lrs'])}.\n"]
     width = ci_stats(methods["OS-MC"]["est"][:, -1], v, 1.0)[1]
     rows = []

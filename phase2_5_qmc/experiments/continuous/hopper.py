@@ -138,8 +138,8 @@ def main(setting="fall"):
             f"pi_e: ARS linear policy (mean return {ret:.0f} on full 1000-step episodes) with action noise sd {SIGMA}. "
             f"Truth v = {v:.5g} ± {mc.std(ddof=1) / np.sqrt(len(mc)):.2g} "
             f"({N_TRUTH} episodes), Var(g) = {var:.4g}, mean length {L_e:.1f}. BPS target learned offline by BPG in "
-            f"{t_bpg:.0f} s (not counted; iterates compared on 40000 episodes of pi_e). {notes}n·MSE/Var(g): on-policy MC = 1; "
-            f"{N_EVAL} seeds. Coverage: 95% t-intervals from groups of 10 runs. Time: µs per episode at n = {NS[-1]} "
+            f"{t_bpg:.0f} s (not counted; iterates compared on 40000 episodes of pi_e). {notes}n·MSE/Var(g): "
+            f"on-policy MC = 1; {N_EVAL} seeds. Coverage: 95% t-intervals from groups of 10 runs. Time: µs per episode at n = {NS[-1]} "
             "on 10 processes.\n"]
     width = ci_stats(methods["OS-MC"]["est"][:, -1], v, 1.0)[1]
     rows = []

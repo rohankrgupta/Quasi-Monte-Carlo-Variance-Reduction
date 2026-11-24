@@ -181,7 +181,7 @@ core/cartpole.py       the ROS repo's CartPole tasks and policies: i.i.d., ROS, 
 core/offline_bps.py    the offline fit of the BPS target from an on-policy pilot
 core/hopper.py         gymnasium's Hopper-v5 stepped directly with MuJoCo, a linear Gaussian policy (ARS), and its samplers
 core/control.py        HalfCheetah (and Reacher) stepped with MuJoCo, with dynamics noise; ARS policies, samplers and BPG
-core/onpolicy_select.py  BPG's iterate selection: each iterate's OIS second moment measured on π_e's own episodes
+core/onpolicy_select.py BPG's iterate selection: each iterate's OIS second moment measured on π_e's own episodes
 ```
 
 Environments, exact DP, ROS toward πe and BPS's target come from Phases 1 and 2.
