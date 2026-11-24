@@ -35,7 +35,7 @@ from numba import njit, prange
 
 from phase1_reproduction.core.repo_io import policy_tensors
 from phase1_reproduction.core.rng import SLOT_ACTION, SLOT_NOISE_1, SLOT_NOISE_2, SLOT_START, stream_key, uniform
-from phase2_5_qmc.core.array_rqmc import SLOT_STEP_SHIFT
+from phase2_5_qmc.core.array_rqmc import SLOT_PERM, SLOT_STEP_SHIFT
 from phase2_5_qmc.core.qmc import _van_der_corput
 
 HORIZON, GAMMA = 200, 0.99
@@ -262,10 +262,13 @@ def _array_one(th_e, th_b, on_policy, cont, mu, inv_sd, vw, noise, n, block, see
         for j in range(n):                      # both networks and the sort key, at the running episodes
             if alive[j]:
                 ze[j, 0], ze[j, 1] = _forward(th_e, mu, inv_sd, S[j], x0, h1, h2)
-                v = vw[H]
-                for c in range(H):
-                    v += vw[c] * h2[c]
-                value[m] = v
+                if vw.size == 0:                # ablation: random order (stratified actions without sorting)
+                    value[m] = uniform(key, seed, offset + j, t, SLOT_PERM)
+                else:
+                    v = vw[H]
+                    for c in range(H):
+                        v += vw[c] * h2[c]
+                    value[m] = v
                 run[m] = j
                 m += 1
                 if on_policy:
@@ -348,6 +351,41 @@ def _bpg_batch(th_e, th_b, cont, mu, inv_sd, noise, n, seed, key, grad):
         lo, hi = c * n // C, (c + 1) * n // C
         if hi > lo:
             _bpg_one(th_e, th_b, cont, mu, inv_sd, noise, seed, key, lo, hi - lo, grad[c])
+
+
+@njit(parallel=True, cache=True)
+def _onpolicy_m2(th_e, th_b, cont, mu, inv_sd, noise, n, key, out):
+    """Per chunk, over on-policy episodes j (seed 0): out[c] = (sum of g^2 pi_e(tau) / q(tau), sum of g), q = th_b.
+    The first sum / n is an unbiased estimate of E_q[(g w)^2], q's OIS second moment (onpolicy_select)."""
+    C = out.shape[0]
+    for c in prange(C):
+        s, x0, h1, h2 = np.empty(4), np.empty(4), np.empty(H), np.empty(H)
+        m2, tot = 0.0, 0.0
+        for j in range(c, n, C):
+            _reset(s, key, 0, j)
+            g, disc, log_r = 0.0, 1.0, 0.0
+            for t in range(HORIZON):
+                b0, b1 = _forward(th_b, mu, inv_sd, s, x0, h1, h2)
+                e0, e1 = _forward(th_e, mu, inv_sd, s, x0, h1, h2)
+                a = _act(e0, e1, uniform(key, 0, j, t, SLOT_ACTION), cont)
+                log_r += _log_p(e0, e1, a, cont) - _log_p(b0, b1, a, cont)
+                done = _step(s, a, cont, noise, key, 0, j, t)
+                g += disc
+                disc *= GAMMA
+                if done:
+                    break
+            m2 += g * g * np.exp(log_r)
+            tot += g
+        out[c, 0] = m2
+        out[c, 1] = tot
+
+
+def onpolicy_moment(pi_e, theta_b, n, stream, noise=0.0):
+    """(estimate of q's OIS second moment, mean return) from n fixed on-policy episodes; q = theta_b."""
+    out = np.zeros((CHUNKS, 2))
+    _onpolicy_m2(pi_e.theta, theta_b, pi_e.continuous, pi_e.mu, pi_e.inv_sd, float(noise), int(n), stream_key(stream),
+                 out)
+    return out[:, 0].sum() / n, out[:, 1].sum() / n
 
 
 @njit(parallel=True, cache=True)
@@ -447,17 +485,24 @@ def fit_value(pi_e, noise=0.0, n=20000, stream="value-fit", ridge=1e-6):
     return np.linalg.solve(A + ridge * np.trace(A) * np.eye(H + 1), xy.sum(0))
 
 
-def bpg_target(pi_e, noise=0.0, iters=300, batch=2000, step=0.05, stream="bpg", n_val=20000, every=25):
+def bpg_target(pi_e, noise=0.0, iters=300, batch=2000, step=0.05, stream="bpg", n_val=20000, every=25,
+               select="onpolicy", n_on=200000, trace=None):
     """A fixed BPS target, learned offline: from pi_e, unit-norm steps that lower the OIS second moment E_q[(g w)^2].
-    Every `every` steps the second moment is measured on one fixed validation sample; the best iterate is returned.
-    Uses iters * batch + (iters / every + 1) * 10 * n_val episodes."""
+    Every `every` steps the iterate's second moment is measured and the best iterate (pi_e included) is returned:
+    select="onpolicy" measures it on the same n_on episodes of pi_e every time (onpolicy_select); select="behavior"
+    (the rule of the first tables) on 10 * n_val episodes of the iterate itself. A list `trace` receives
+    (step, second moment) at every check. Uses iters * batch + (iters / every + 1) * n_on (or 10 * n_val) episodes."""
     key = stream_key(stream)
 
     def second_moment(theta):
+        if select == "onpolicy":
+            return onpolicy_moment(pi_e, theta, n_on, stream + "-onpolicy", noise)[0]
         return iid(pi_e, theta, n_val, 10, stream + "-val", noise)["OIS2"].mean()
 
     theta = pi_e.theta.copy()
     best = (second_moment(theta), theta.copy())
+    if trace is not None:
+        trace.append((0, best[0]))
     for k in range(iters):
         grad = np.zeros((CHUNKS, N_PARAMS))
         _bpg_batch(pi_e.theta, theta, pi_e.continuous, pi_e.mu, pi_e.inv_sd, float(noise), int(batch), k, key, grad)
@@ -465,6 +510,8 @@ def bpg_target(pi_e, noise=0.0, iters=300, batch=2000, step=0.05, stream="bpg", 
         theta = theta + step / np.sqrt(1.0 + k / 50) * direction / np.linalg.norm(direction)
         if (k + 1) % every == 0:
             m2 = second_moment(theta)
+            if trace is not None:
+                trace.append((k + 1, m2))
             if m2 < best[0]:
                 best = (m2, theta.copy())
     return best[1]

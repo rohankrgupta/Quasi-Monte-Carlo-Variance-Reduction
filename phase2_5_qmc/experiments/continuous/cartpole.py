@@ -39,16 +39,16 @@ OUT = Path(__file__).resolve().parents[2] / "results" / "continuous"
 NS = (64, 512, 4096)
 N_EVAL, N_TUNE = 1000, 500
 NOISES = (0.0, 3.0)
-TASKS = {   # ROS and online-BPG grids around the repo's choices; bpg_step = the offline BPS step size
+TASKS = {   # ROS grids reach rates where ROS diverges, so the tuned rate is interior; bpg_step = offline BPS step
     "discrete": dict(policy="CartPole_1000", title="CartPole (discrete actions)", out="cartpole.md",
-                     ros_lrs=(3.0, 10.0, 30.0), bpg_lrs=(5e-5, 1e-4, 2e-4, 4e-4, 8e-4), bpg_step=0.05,
+                     ros_lrs=(3.0, 10.0, 30.0, 60.0, 100.0, 150.0), bpg_lrs=(5e-5, 1e-4, 2e-4, 4e-4, 8e-4), bpg_step=0.05,
                      folder="cartpole", repo_value=36.045859992477716,
                      repo={"OS-MC (ROS repo, stored)": "OnPolicySampler1_MonteCarlo",
                            "ROS-MC, lr 10 (ROS repo, stored)": "RobustOnPolicySampler2_MonteCarlo",
                            "BPS online, OIS (ROS repo's BPG, stored)":
                                "BehaviorPolicyGradient2_OrdinaryImportanceSampling"}),
     "continuous": dict(policy="CartPoleContinuous_3000", title="CartPole (continuous actions)",
-                       out="cartpole_continuous.md", ros_lrs=(0.03, 0.1, 0.3),
+                       out="cartpole_continuous.md", ros_lrs=(0.01, 0.03, 0.1, 0.3, 0.6, 1.0),
                        bpg_lrs=(1.25e-7, 2.5e-7, 5e-7, 1e-6, 2e-6), bpg_step=0.002,
                        folder="con_cartpole", repo_value=35.35066209876531,
                        repo={"OS-MC (ROS repo, stored)": "OnPolicySampler1_MonteCarlo",
@@ -102,7 +102,7 @@ def run_domain(task, noise):
         """Evaluation-seed estimates at every n; with a grid, h is the value with the lowest MSE on the tuning seeds."""
         est, length, chosen = [], [], []
         for n in NS:
-            h = grid[0] if len(grid) == 1 else min(grid, key=lambda x: np.mean((f(n, N_TUNE, "tune", x)[0][key] - v) ** 2))
+            h = grid[0] if len(grid) == 1 else min(grid, key=lambda x: np.nan_to_num(np.mean((f(n, N_TUNE, "tune", x)[0][key] - v) ** 2), nan=np.inf))
             r, sec = f(n, N_EVAL, "eval", h)
             est.append(r[key])
             length.append(r["length"].mean())
